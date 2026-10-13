@@ -1,0 +1,121 @@
+name: enduro-bot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Порт наружу не публикуем: доступ только из сети compose.
+    # Для отладки с хоста раскомментируйте:
+    # ports: ["5432:5432"]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # MinIO нужен только при STORAGE_BACKEND=s3:
+  #   docker compose --profile s3 up -d
+  minio:
+    image: minio/minio:latest
+    profiles: ["s3"]
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9001:9001"   # веб-консоль MinIO
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Разовая задача: создаёт бакет при первом запуске
+  minio-init:
+    image: minio/mc:latest
+    profiles: ["s3"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${S3_ACCESS_KEY} $${S3_SECRET_KEY} &&
+      mc mb --ignore-existing local/$${S3_BUCKET} &&
+      mc anonymous set none local/$${S3_BUCKET} &&
+      echo 'Бакет готов, публичный доступ закрыт'
+      "
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET}
+
+  # Разовая задача: накатывает схему до старта бота. Те же SQL-файлы,
+  # что и на Windows через pgAdmin; каждый безопасно запускать повторно,
+  # поэтому задача выполняется при каждом `up` и ничего не ломает.
+  migrate:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PGHOST: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./docs:/docs:ro
+    command: >
+      sh -c "psql -v ON_ERROR_STOP=1 -q -U $${POSTGRES_USER} -d $${POSTGRES_DB}
+      -f /docs/schema.sql -f /docs/upgrade_0003_0004.sql
+      -f /docs/upgrade_0005.sql -f /docs/upgrade_0006.sql"
+    restart: "no"
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    env_file: .env
+    # Внутри compose база и Redis доступны по именам сервисов —
+    # так один и тот же .env подходит и для Windows, и для сервера
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    volumes:
+      - storage:/app/storage   # фото при STORAGE_BACKEND=local
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  storage:

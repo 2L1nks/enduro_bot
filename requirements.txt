@@ -1,0 +1,23 @@
+aiogram==3.15.0
+SQLAlchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# pydantic намеренно не закреплён: aiogram 3.15 требует <2.10,
+# и жёсткий пин здесь ломает установку. Версию выбирает pip
+# по ограничению aiogram.
+pydantic-settings>=2.5,<3
+
+# FSM в Redis (FSM_STORAGE=redis)
+redis==5.2.1
+# Яндекс.Диск — обычный REST, хватает aiohttp (ставится с aiogram)
+aiohttp>=3.10,<4
+# Выгрузка в Excel
+openpyxl==3.1.5
+# База часовых поясов. На Linux она есть в системе, на Windows —
+# нет, и без пакета ZoneInfo("Europe/Moscow") не запустится.
+tzdata>=2024.1
+
+# Только для STORAGE_BACKEND=s3 (MinIO, Yandex Object Storage).
+# Для Яндекс.Диска и локальной папки не нужен — раскомментируйте при надобности.
+# aiobotocore==2.15.2
